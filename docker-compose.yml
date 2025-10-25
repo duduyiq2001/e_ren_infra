@@ -29,7 +29,7 @@ services:
       DATABASE_URL: postgresql://postgres:postgres@db:5432/e_ren_development
       TEST_DATABASE_URL: postgresql://postgres:postgres@db:5432/e_ren_test
     volumes:
-      - /Users/yiqundu/projects/e_ren:/rails
+      - ../e_ren:/rails
       - bundle_cache:/usr/local/bundle
     ports:
       - "3000:3000"

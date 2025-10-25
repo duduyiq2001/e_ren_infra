@@ -10,6 +10,15 @@ Development and deployment tooling for the E-Ren Rails application.
 
 ## Quick Start
 
+### Prerequisites
+
+**Directory structure:** Both repos must be in the same parent directory:
+```
+~/projects/
+├── e_ren/           # Rails application
+└── e_ren_infra/     # This repo
+```
+
 ### Installation
 
 Run the setup script to configure the `e_ren` CLI:

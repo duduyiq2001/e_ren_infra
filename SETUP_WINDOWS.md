@@ -17,12 +17,18 @@ This guide is for Windows developers working on E-Ren.
 
 ## Installation
 
-1. Clone the repositories:
+1. Clone the repositories **side-by-side** in the same directory:
 ```bash
 cd C:\Users\YourName\Projects
 git clone <e_ren_repo>
 git clone <e_ren_infra_repo>
+
+# Result should be:
+# C:\Users\YourName\Projects\e_ren\
+# C:\Users\YourName\Projects\e_ren_infra\
 ```
+
+**Important:** Both repos must be in the same parent folder!
 
 2. Set up the `e_ren` command alias.
 
