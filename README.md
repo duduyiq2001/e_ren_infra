@@ -30,8 +30,12 @@ Or open a new terminal window.
 ### Usage
 
 ```bash
-# Start development containers (auto-builds on first run)
+# Start development containers (auto-detects your platform)
 e_ren up
+
+# Force specific platform (for cross-platform teams)
+e_ren up --platform amd64    # For Windows/Linux x86_64
+e_ren up --platform arm64    # For Apple Silicon / AWS Graviton
 
 # Run all tests
 e_ren test
@@ -47,10 +51,26 @@ e_ren logs
 
 # Rebuild Docker image (only if Dockerfile.dev changes)
 e_ren build
+e_ren build --platform amd64  # Force specific platform
 
 # Stop containers
 e_ren down
 ```
+
+### Platform Architecture
+
+**Default behavior:** Auto-detects your system architecture
+- Apple Silicon (M1/M2/M3) → `linux/arm64`
+- Intel/AMD → `linux/amd64`
+
+**Deployment target:** AWS Graviton (ARM64)
+- 20-40% cheaper than standard EC2
+- Same architecture as Apple Silicon
+- Better performance per dollar
+
+**Cross-platform development:**
+- Mac users: Use default (ARM64) or force `--platform amd64`
+- Windows/Linux users: Use `--platform amd64` for x86_64
 
 ## How It Works
 
@@ -96,6 +116,12 @@ The `src/e_ren_test/` directory contains Dagger modules for CI/CD:
 - Reproducible: Same container setup locally and in CI
 - Composable: Reusable modules across projects
 - Language-agnostic: Python SDK works alongside Rails
+
+**Why AWS Graviton (ARM64)?**
+- Cost: 20-40% cheaper than x86_64 EC2 instances
+- Performance: Better performance per dollar
+- Compatibility: Same architecture as Apple Silicon (dev/prod parity)
+- Future-proof: ARM is the future (Apple, AWS, even Microsoft moving to ARM)
 
 ## Project Structure
 

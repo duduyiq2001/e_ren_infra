@@ -3,21 +3,39 @@
 E-Ren CLI - Development and testing tool for E-Ren Rails app
 
 Commands:
-  up            Start Docker containers (Rails + Postgres)
-  down          Stop Docker containers
-  build         Rebuild Docker image (run after Dockerfile changes)
-  test [file]   Run RSpec tests (optionally specify a file)
-  test all      Run all RSpec tests
-  shell         Open bash shell in Rails container
-  logs          Show Rails container logs
+  up [--platform PLATFORM]  Start Docker containers (Rails + Postgres)
+  down                      Stop Docker containers
+  build [--platform PLATFORM] Rebuild Docker image (run after Dockerfile changes)
+  test [file]               Run RSpec tests (optionally specify a file)
+  test all                  Run all RSpec tests
+  shell                     Open bash shell in Rails container
+  logs                      Show Rails container logs
+
+Options:
+  --platform PLATFORM       Build for specific platform (arm64, amd64, x86)
+                           Default: auto-detect (arm64 on Apple Silicon, amd64 otherwise)
+
+Examples:
+  e_ren up                  # Auto-detect platform
+  e_ren up --platform amd64 # Force x86_64 (for Windows/Linux teammates)
+  e_ren build --platform arm64 # Force ARM (for Apple Silicon)
 """
 
 import subprocess
 import sys
 import os
+import platform
 
 CONTAINER_NAME = "e_ren_rails"
 COMPOSE_FILE = os.path.join(os.path.dirname(__file__), "docker-compose.yml")
+
+# Platform mapping
+PLATFORM_MAP = {
+    'arm64': 'linux/arm64',
+    'amd64': 'linux/amd64',
+    'x86': 'linux/amd64',
+    'x86_64': 'linux/amd64',
+}
 
 
 def run_command(cmd, check=True, capture_output=False):
@@ -37,17 +55,58 @@ def check_container_running():
     return CONTAINER_NAME in result.stdout
 
 
-def build():
+def detect_platform():
+    """Auto-detect platform based on host architecture"""
+    machine = platform.machine().lower()
+    if machine in ['arm64', 'aarch64']:
+        return 'linux/arm64'
+    else:
+        return 'linux/amd64'
+
+
+def parse_platform_arg(args):
+    """Parse --platform flag from args"""
+    platform_arg = None
+    remaining_args = []
+
+    i = 0
+    while i < len(args):
+        if args[i] == '--platform' and i + 1 < len(args):
+            platform_key = args[i + 1].lower()
+            platform_arg = PLATFORM_MAP.get(platform_key, platform_key)
+            if not platform_arg.startswith('linux/'):
+                platform_arg = f'linux/{platform_arg}'
+            i += 2
+        else:
+            remaining_args.append(args[i])
+            i += 1
+
+    return platform_arg or detect_platform(), remaining_args
+
+
+def build(platform=None):
     """Rebuild Docker image"""
-    print("🔨 Building E-Ren Docker image...")
-    run_command(f"docker-compose -f {COMPOSE_FILE} build")
+    if platform is None:
+        platform = detect_platform()
+
+    print(f"🔨 Building E-Ren Docker image for {platform}...")
+
+    # Set DOCKER_DEFAULT_PLATFORM env var
+    env_cmd = f"DOCKER_DEFAULT_PLATFORM={platform} docker-compose -f {COMPOSE_FILE} build"
+    run_command(env_cmd)
     print("✅ Build complete!")
 
 
-def up():
+def up(platform=None):
     """Start containers"""
-    print("🚀 Starting E-Ren containers...")
-    run_command(f"docker-compose -f {COMPOSE_FILE} up -d --build")
+    if platform is None:
+        platform = detect_platform()
+
+    print(f"🚀 Starting E-Ren containers for {platform}...")
+
+    # Set DOCKER_DEFAULT_PLATFORM env var
+    env_cmd = f"DOCKER_DEFAULT_PLATFORM={platform} docker-compose -f {COMPOSE_FILE} up -d --build"
+    run_command(env_cmd)
     print("✅ Containers started!")
     print("📦 Installing dependencies (this may take a moment on first run)...")
     print("\n💡 Tip: Run 'e_ren test' to run tests or 'e_ren shell' for interactive shell")
@@ -120,14 +179,26 @@ def main():
     command = sys.argv[1]
     args = sys.argv[2:] if len(sys.argv) > 2 else []
 
-    commands = {
-        "up": lambda: up(),
-        "down": lambda: down(),
-        "build": lambda: build(),
-        "test": lambda: test(args),
-        "shell": lambda: shell(),
-        "logs": lambda: logs(),
-    }
+    # Parse platform for build/up commands
+    if command in ['up', 'build']:
+        platform, args = parse_platform_arg(args)
+        commands = {
+            "up": lambda: up(platform),
+            "down": lambda: down(),
+            "build": lambda: build(platform),
+            "test": lambda: test(args),
+            "shell": lambda: shell(),
+            "logs": lambda: logs(),
+        }
+    else:
+        commands = {
+            "up": lambda: up(),
+            "down": lambda: down(),
+            "build": lambda: build(),
+            "test": lambda: test(args),
+            "shell": lambda: shell(),
+            "logs": lambda: logs(),
+        }
 
     if command not in commands:
         print(f"❌ Unknown command: {command}\n")
