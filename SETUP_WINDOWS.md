@@ -24,18 +24,61 @@ git clone <e_ren_repo>
 git clone <e_ren_infra_repo>
 ```
 
-2. Run setup (in PowerShell or Git Bash):
+2. Set up the `e_ren` command alias.
+
+**Option A: Batch File (Recommended - Easiest!)**
+
+The repo includes `e_ren.bat` - just add the directory to PATH:
+
+```powershell
+# In PowerShell (run as Administrator or for current user)
+# Replace YourName with your actual username
+$infraPath = "C:\Users\YourName\Projects\e_ren_infra"
+
+# Add to User PATH (no admin needed)
+[Environment]::SetEnvironmentVariable(
+    "Path",
+    [Environment]::GetEnvironmentVariable("Path", "User") + ";$infraPath",
+    "User"
+)
+
+# Restart PowerShell, then you can use:
+e_ren up --platform amd64
+```
+
+**Option B: PowerShell Alias (For PowerShell users)**
+
+Add to your PowerShell profile:
+
+```powershell
+# Open profile
+notepad $PROFILE
+
+# Add this line (adjust path):
+function e_ren { python C:\Users\YourName\Projects\e_ren_infra\e_ren $args }
+
+# Save and reload:
+. $PROFILE
+
+# Now you can use:
+e_ren up --platform amd64
+```
+
+**Option C: Git Bash (For Unix-like experience)**
+
 ```bash
 cd e_ren_infra
-python setup.py  # Will create e_ren command
+chmod +x e_ren
+./setup.sh  # Adds to PATH in ~/.bashrc
+
+# Restart Git Bash, then:
+e_ren up --platform amd64
 ```
 
-3. Add to PATH (PowerShell):
-```powershell
-$env:Path += ";C:\Users\YourName\Projects\e_ren_infra"
+**Option D: No Alias (Just use python)**
+```bash
+python C:\Users\YourName\Projects\e_ren_infra\e_ren up --platform amd64
 ```
-
-Or manually add `C:\Users\YourName\Projects\e_ren_infra` to your PATH.
 
 ## Usage
 
