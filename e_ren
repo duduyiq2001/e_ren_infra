@@ -84,16 +84,31 @@ def parse_platform_arg(args):
     return platform_arg or detect_platform(), remaining_args
 
 
+def is_windows():
+    """Check if running on Windows"""
+    return sys.platform.startswith('win')
+
+
+def run_docker_compose(cmd, platform):
+    """Run docker-compose with platform environment variable"""
+    if is_windows():
+        # Windows: Use subprocess env parameter
+        env = os.environ.copy()
+        env['DOCKER_DEFAULT_PLATFORM'] = platform
+        return subprocess.run(cmd, shell=True, env=env, check=True)
+    else:
+        # Unix (Mac/Linux): Use shell env var syntax
+        env_cmd = f"DOCKER_DEFAULT_PLATFORM={platform} {cmd}"
+        return run_command(env_cmd)
+
+
 def build(platform=None):
     """Rebuild Docker image"""
     if platform is None:
         platform = detect_platform()
 
     print(f"🔨 Building E-Ren Docker image for {platform}...")
-
-    # Set DOCKER_DEFAULT_PLATFORM env var
-    env_cmd = f"DOCKER_DEFAULT_PLATFORM={platform} docker-compose -f {COMPOSE_FILE} build"
-    run_command(env_cmd)
+    run_docker_compose(f"docker-compose -f {COMPOSE_FILE} build", platform)
     print("✅ Build complete!")
 
 
@@ -103,10 +118,7 @@ def up(platform=None):
         platform = detect_platform()
 
     print(f"🚀 Starting E-Ren containers for {platform}...")
-
-    # Set DOCKER_DEFAULT_PLATFORM env var
-    env_cmd = f"DOCKER_DEFAULT_PLATFORM={platform} docker-compose -f {COMPOSE_FILE} up -d --build"
-    run_command(env_cmd)
+    run_docker_compose(f"docker-compose -f {COMPOSE_FILE} up -d --build", platform)
     print("✅ Containers started!")
     print("📦 Installing dependencies (this may take a moment on first run)...")
     print("\n💡 Tip: Run 'e_ren test' to run tests or 'e_ren shell' for interactive shell")
