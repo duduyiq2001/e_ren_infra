@@ -1,0 +1,147 @@
+#!/usr/bin/env python3
+"""
+E-Ren CLI - Development and testing tool for E-Ren Rails app
+
+Commands:
+  up            Start Docker containers (Rails + Postgres)
+  down          Stop Docker containers
+  build         Rebuild Docker image (run after Dockerfile changes)
+  test [file]   Run RSpec tests (optionally specify a file)
+  test all      Run all RSpec tests
+  shell         Open bash shell in Rails container
+  logs          Show Rails container logs
+"""
+
+import subprocess
+import sys
+import os
+
+CONTAINER_NAME = "e_ren_rails"
+COMPOSE_FILE = os.path.join(os.path.dirname(__file__), "docker-compose.yml")
+
+
+def run_command(cmd, check=True, capture_output=False):
+    """Run a shell command"""
+    if capture_output:
+        return subprocess.run(cmd, shell=True, capture_output=True, text=True)
+    else:
+        return subprocess.run(cmd, shell=True, check=check)
+
+
+def check_container_running():
+    """Check if Rails container is running"""
+    result = run_command(
+        f"docker ps --filter name={CONTAINER_NAME} --format '{{{{.Names}}}}'",
+        capture_output=True
+    )
+    return CONTAINER_NAME in result.stdout
+
+
+def build():
+    """Rebuild Docker image"""
+    print("🔨 Building E-Ren Docker image...")
+    run_command(f"docker-compose -f {COMPOSE_FILE} build")
+    print("✅ Build complete!")
+
+
+def up():
+    """Start containers"""
+    print("🚀 Starting E-Ren containers...")
+    run_command(f"docker-compose -f {COMPOSE_FILE} up -d --build")
+    print("✅ Containers started!")
+    print("📦 Installing dependencies (this may take a moment on first run)...")
+    print("\n💡 Tip: Run 'e_ren test' to run tests or 'e_ren shell' for interactive shell")
+
+
+def down():
+    """Stop containers"""
+    print("🛑 Stopping E-Ren containers...")
+    run_command(f"docker-compose -f {COMPOSE_FILE} down")
+    print("✅ Containers stopped!")
+
+
+def test(args):
+    """Run RSpec tests"""
+    if not check_container_running():
+        print("❌ Rails container is not running. Start it with: e_ren up")
+        sys.exit(1)
+
+    if args and args[0] == "all":
+        test_cmd = "bundle exec rspec"
+    elif args:
+        test_file = args[0]
+        test_cmd = f"bundle exec rspec {test_file}"
+    else:
+        test_cmd = "bundle exec rspec"
+
+    print(f"🧪 Running tests: {test_cmd}")
+
+    # Ensure test database exists
+    run_command(
+        f"docker exec {CONTAINER_NAME} bash -c 'RAILS_ENV=test bundle exec rails db:create db:migrate'",
+        check=False
+    )
+
+    # Run tests and pipe output
+    result = run_command(
+        f"docker exec -e RAILS_ENV=test {CONTAINER_NAME} {test_cmd}",
+        check=False
+    )
+
+    sys.exit(result.returncode)
+
+
+def shell():
+    """Open interactive shell"""
+    if not check_container_running():
+        print("❌ Rails container is not running. Start it with: e_ren up")
+        sys.exit(1)
+
+    print("🐚 Opening shell in Rails container...")
+    run_command(f"docker exec -it {CONTAINER_NAME} bash")
+
+
+def logs():
+    """Show container logs"""
+    print("📋 Showing Rails container logs...")
+    run_command(f"docker-compose -f {COMPOSE_FILE} logs -f rails")
+
+
+def usage():
+    """Show usage information"""
+    print(__doc__)
+    sys.exit(1)
+
+
+def main():
+    if len(sys.argv) < 2:
+        usage()
+
+    command = sys.argv[1]
+    args = sys.argv[2:] if len(sys.argv) > 2 else []
+
+    commands = {
+        "up": lambda: up(),
+        "down": lambda: down(),
+        "build": lambda: build(),
+        "test": lambda: test(args),
+        "shell": lambda: shell(),
+        "logs": lambda: logs(),
+    }
+
+    if command not in commands:
+        print(f"❌ Unknown command: {command}\n")
+        usage()
+
+    try:
+        commands[command]()
+    except KeyboardInterrupt:
+        print("\n\n👋 Interrupted by user")
+        sys.exit(130)
+    except subprocess.CalledProcessError as e:
+        print(f"\n❌ Command failed with exit code {e.returncode}")
+        sys.exit(e.returncode)
+
+
+if __name__ == "__main__":
+    main()

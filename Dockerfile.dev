@@ -1,0 +1,25 @@
+# syntax=docker/dockerfile:1
+
+# Development Dockerfile for E-Ren Rails app
+# Only installs system dependencies - gems installed at runtime via bundle_cache volume
+
+ARG RUBY_VERSION=3.4.1
+FROM ruby:${RUBY_VERSION}-slim
+
+# Install system packages needed for Rails + PostgreSQL
+RUN apt-get update -qq && \
+    apt-get install -y --no-install-recommends \
+    build-essential \
+    curl \
+    git \
+    libpq-dev \
+    libyaml-dev \
+    postgresql-client \
+    libvips \
+    pkg-config
+
+# Set working directory
+WORKDIR /rails
+
+# Note: Gemfile/source code NOT copied - comes via volume mount
+# Note: bundle install runs at container startup, gems cached in volume

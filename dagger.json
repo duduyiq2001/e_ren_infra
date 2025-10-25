@@ -1,0 +1,7 @@
+{
+  "name": "e-ren-test",
+  "engineVersion": "v0.19.3",
+  "sdk": {
+    "source": "python"
+  }
+}

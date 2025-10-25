@@ -1,0 +1,44 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: e_ren_development
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  rails:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    container_name: e_ren_rails
+    working_dir: /rails
+    command: bash -c "bundle install && sleep infinity"
+    environment:
+      RAILS_ENV: development
+      DATABASE_URL: postgresql://postgres:postgres@db:5432/e_ren_development
+      TEST_DATABASE_URL: postgresql://postgres:postgres@db:5432/e_ren_test
+    volumes:
+      - /Users/yiqundu/projects/e_ren:/rails
+      - bundle_cache:/usr/local/bundle
+    ports:
+      - "3000:3000"
+    depends_on:
+      db:
+        condition: service_healthy
+    stdin_open: true
+    tty: true
+
+volumes:
+  postgres_data:
+  bundle_cache:
