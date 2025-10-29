@@ -84,8 +84,8 @@ if [[ "$setup_db" =~ ^[Yy]$ ]]; then
 
   # Create databases and run migrations
   echo ""
-  echo "Creating databases and running migrations..."
-  docker-compose run --rm rails rails db:prepare
+  echo "Installing gems and creating databases..."
+  docker-compose run --rm rails bash -c "bundle install && rails db:prepare"
 
   if [ $? -eq 0 ]; then
     echo "✅ Databases created successfully:"
@@ -103,17 +103,17 @@ if [[ "$setup_db" =~ ^[Yy]$ ]]; then
   read -r load_seeds
 
   if [[ "$load_seeds" =~ ^[Yy]$ ]]; then
-    docker-compose run --rm rails rails db:seed
+    docker-compose run --rm rails bash -c "bundle install && rails db:seed"
     echo "✅ Sample data loaded"
   else
-    echo "⏭️  Skipping seed data (you can run 'docker-compose run --rm rails rails db:seed' later)"
+    echo "⏭️  Skipping seed data (you can run 'docker-compose run --rm rails bash -c \"bundle install && rails db:seed\"' later)"
   fi
 else
   echo "⏭️  Skipping database setup"
   echo ""
   echo "To set up databases later, run:"
   echo "  1. docker-compose up -d db"
-  echo "  2. docker-compose run --rm rails rails db:prepare"
+  echo "  2. docker-compose run --rm rails bash -c 'bundle install && rails db:prepare'"
 fi
 
 # Source .zshrc or remind user
