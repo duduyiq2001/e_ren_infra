@@ -24,6 +24,8 @@ services:
     container_name: e_ren_rails
     working_dir: /rails
     command: bash -c "bundle install && sleep infinity"
+    env_file:
+      - ../e_ren/.env
     environment:
       RAILS_ENV: development
       DATABASE_URL: postgresql://postgres:postgres@db:5432/e_ren_development

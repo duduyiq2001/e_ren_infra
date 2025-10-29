@@ -6,6 +6,7 @@ Commands:
   up [--platform PLATFORM]  Start Docker containers (Rails + Postgres)
   down                      Stop Docker containers
   build [--platform PLATFORM] Rebuild Docker image (run after Dockerfile changes)
+  server                    Start Rails server on http://localhost:3000
   test [file]               Run RSpec tests (optionally specify a file)
   test all                  Run all RSpec tests
   shell                     Open bash shell in Rails container
@@ -178,6 +179,17 @@ def logs():
     run_command(f"docker-compose -f {COMPOSE_FILE} logs -f rails")
 
 
+def server():
+    """Start Rails server"""
+    if not check_container_running():
+        print("❌ Rails container is not running. Start it with: e_ren up")
+        sys.exit(1)
+
+    print("🌐 Starting Rails server on http://localhost:3000")
+    print("💡 Press Ctrl+C to stop the server\n")
+    run_command(f"docker exec -it {CONTAINER_NAME} rails server -b 0.0.0.0")
+
+
 def usage():
     """Show usage information"""
     print(__doc__)
@@ -198,6 +210,7 @@ def main():
             "up": lambda: up(platform),
             "down": lambda: down(),
             "build": lambda: build(platform),
+            "server": lambda: server(),
             "test": lambda: test(args),
             "shell": lambda: shell(),
             "logs": lambda: logs(),
@@ -207,6 +220,7 @@ def main():
             "up": lambda: up(),
             "down": lambda: down(),
             "build": lambda: build(),
+            "server": lambda: server(),
             "test": lambda: test(args),
             "shell": lambda: shell(),
             "logs": lambda: logs(),
