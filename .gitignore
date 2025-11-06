@@ -3,3 +3,4 @@
 /sdk
 /.env
 *.swp
+.e_ren_test_cache.json

@@ -7,8 +7,7 @@ Commands:
   down                      Stop Docker containers
   build [--platform PLATFORM] Rebuild Docker image (run after Dockerfile changes)
   server                    Start Rails server on http://localhost:3000
-  test [file]               Run RSpec tests (optionally specify a file)
-  test all                  Run all RSpec tests
+  test [args...]            Run RSpec tests (supports all RSpec options)
   shell                     Open bash shell in Rails container
   logs                      Show Rails container logs
 
@@ -20,15 +19,32 @@ Examples:
   e_ren up                  # Auto-detect platform
   e_ren up --platform amd64 # Force x86_64 (for Windows/Linux teammates)
   e_ren build --platform arm64 # Force ARM (for Apple Silicon)
+
+  # Testing examples
+  e_ren test                                     # Run all tests
+  e_ren test spec/models                         # Run directory
+  e_ren test spec/models/user_spec.rb            # Run file
+  e_ren test spec/models/user_spec.rb:42         # Run specific line
+  e_ren test spec/models/user_spec.rb:42:56      # Run multiple lines
+  e_ren test --example "increments counter"      # Run by example name
+  e_ren test -e "auto-confirms"                  # Run by example (short)
+  e_ren test spec/models --tag focus             # Run directory with tag
+  e_ren test prev                                # Re-run previously failed tests
+  e_ren test failed                              # Re-run previously failed tests (alias)
+  e_ren test --debug spec/models/user_spec.rb:42 # Debug mode (enables binding.pry)
+  e_ren test -d spec/models                      # Debug mode (short form)
 """
 
 import subprocess
 import sys
 import os
 import platform
+import re
+import json
 
 CONTAINER_NAME = "e_ren_rails"
 COMPOSE_FILE = os.path.join(os.path.dirname(__file__), "docker-compose.yml")
+CACHE_FILE = os.path.join(os.path.dirname(__file__), ".e_ren_test_cache.json")
 
 # Platform mapping
 PLATFORM_MAP = {
@@ -45,6 +61,54 @@ def run_command(cmd, check=True, capture_output=False):
         return subprocess.run(cmd, shell=True, capture_output=True, text=True)
     else:
         return subprocess.run(cmd, shell=True, check=check)
+
+
+def parse_failed_tests(output):
+    """Parse RSpec output to extract failed test locations
+
+    RSpec outputs failures like:
+      rspec ./spec/models/user_spec.rb:42 # User validations should validate email
+    """
+    failed_tests = []
+
+    # Pattern matches lines like: rspec ./spec/path/file_spec.rb:123
+    pattern = r'rspec\s+(\.\/)?([^\s]+\.rb:\d+)'
+
+    for line in output.split('\n'):
+        match = re.search(pattern, line)
+        if match:
+            # Extract just the file path with line number
+            test_location = match.group(2)
+            if test_location not in failed_tests:
+                failed_tests.append(test_location)
+
+    return failed_tests
+
+
+def save_test_cache(failed_tests, last_command):
+    """Save failed tests to cache file"""
+    cache_data = {
+        'failed_tests': failed_tests,
+        'last_command': last_command
+    }
+
+    try:
+        with open(CACHE_FILE, 'w') as f:
+            json.dump(cache_data, f, indent=2)
+    except Exception:
+        # Silently fail if cache can't be written
+        pass
+
+
+def load_test_cache():
+    """Load failed tests from cache file"""
+    try:
+        if os.path.exists(CACHE_FILE):
+            with open(CACHE_FILE, 'r') as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return None
 
 
 def check_container_running():
@@ -133,20 +197,60 @@ def down():
 
 
 def test(args):
-    """Run RSpec tests"""
+    """Run RSpec tests
+
+    Examples:
+        e_ren test                                    # Run all tests
+        e_ren test spec/models                        # Run directory
+        e_ren test spec/models/user_spec.rb           # Run file
+        e_ren test spec/models/user_spec.rb:42        # Run specific line
+        e_ren test spec/models/user_spec.rb:42:56     # Run multiple lines
+        e_ren test --example "increments counter"     # Run by name
+        e_ren test -e "auto-confirms"                 # Run by name (short)
+        e_ren test --tag focus                        # Run by tag
+        e_ren test prev                               # Re-run previously failed tests
+        e_ren test failed                             # Re-run previously failed tests
+        e_ren test --debug [args]                     # Debug mode (enables binding.pry)
+        e_ren test -d [args]                          # Debug mode (short form)
+    """
     if not check_container_running():
         print("❌ Rails container is not running. Start it with: e_ren up")
         sys.exit(1)
 
-    if args and args[0] == "all":
-        test_cmd = "bundle exec rspec"
-    elif args:
-        test_file = args[0]
-        test_cmd = f"bundle exec rspec {test_file}"
-    else:
-        test_cmd = "bundle exec rspec"
+    # Check for debug mode
+    debug_mode = False
+    if args and args[0] in ['--debug', '-d']:
+        debug_mode = True
+        args = args[1:]  # Remove debug flag from args
 
-    print(f"🧪 Running tests: {test_cmd}")
+    # Check if user wants to re-run previous failures
+    if args and args[0] in ['prev', 'failed']:
+        cache = load_test_cache()
+        if not cache or not cache.get('failed_tests'):
+            print("❌ No previously failed tests found. Run tests first to build cache.")
+            sys.exit(1)
+
+        failed_tests = cache['failed_tests']
+        print(f"🔄 Re-running {len(failed_tests)} previously failed test(s):")
+        for test in failed_tests:
+            print(f"   - {test}")
+        print()
+
+        rspec_args = ' '.join(failed_tests)
+        test_cmd = f"bundle exec rspec {rspec_args}"
+    else:
+        # Join all arguments to pass through to RSpec
+        # This allows line numbers, directories, options, etc.
+        if args:
+            rspec_args = ' '.join(args)
+            test_cmd = f"bundle exec rspec {rspec_args}"
+        else:
+            test_cmd = "bundle exec rspec"
+
+    if debug_mode:
+        print(f"🐛 Running tests in DEBUG mode (binding.pry enabled): {test_cmd}")
+    else:
+        print(f"🧪 Running tests: {test_cmd}")
 
     # Ensure test database exists
     run_command(
@@ -154,13 +258,42 @@ def test(args):
         check=False
     )
 
-    # Run tests and pipe output
-    result = run_command(
-        f"docker exec -e RAILS_ENV=test {CONTAINER_NAME} {test_cmd}",
-        check=False
-    )
+    # Run tests
+    if debug_mode:
+        # Interactive mode for debugging (allows binding.pry to work)
+        # Use os.system() instead of subprocess.run() to properly connect stdin
+        exit_code = os.system(
+            f"docker exec -it -e RAILS_ENV=test {CONTAINER_NAME} {test_cmd}"
+        )
+        # Don't parse failures in debug mode
+        # os.system returns exit code shifted by 8 bits on Unix
+        sys.exit(exit_code >> 8 if exit_code > 0 else 0)
+    else:
+        # Normal mode with output capture for failure parsing
+        result = subprocess.run(
+            f"docker exec -e RAILS_ENV=test {CONTAINER_NAME} {test_cmd}",
+            shell=True,
+            capture_output=True,
+            text=True
+        )
 
-    sys.exit(result.returncode)
+        # Print output
+        print(result.stdout)
+        if result.stderr:
+            print(result.stderr, file=sys.stderr)
+
+        # Parse failed tests and save to cache
+        failed_tests = parse_failed_tests(result.stdout + result.stderr)
+
+        if failed_tests:
+            save_test_cache(failed_tests, test_cmd)
+            print(f"\n💾 Cached {len(failed_tests)} failed test(s). Run 'e_ren test prev' to re-run them.")
+        else:
+            # Clear cache if all tests passed
+            if os.path.exists(CACHE_FILE):
+                os.remove(CACHE_FILE)
+
+        sys.exit(result.returncode)
 
 
 def shell():
