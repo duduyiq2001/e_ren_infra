@@ -1,0 +1,184 @@
+# Karpenter Configuration for E-Ren EKS Cluster
+#
+# Apply after cluster is created:
+#   aws eks update-kubeconfig --region us-east-1 --name e-ren-cluster
+#   kubectl apply -f karpenter-config.yaml
+#
+# This creates:
+# - EC2NodeClass (infrastructure config)
+# - On-demand NodePool (critical workloads)
+# - Spot NodePool (batch/fault-tolerant workloads)
+
+---
+apiVersion: karpenter.k8s.aws/v1
+kind: EC2NodeClass
+metadata:
+  name: default
+spec:
+  # AMI family (Karpenter auto-selects latest)
+  amiFamily: AL2
+
+  # IAM role for nodes (created by Karpenter module)
+  # NOTE: Replace ${CLUSTER_NAME} with actual cluster name
+  role: e-ren-cluster
+
+  # Subnet selector (uses private subnets tagged for Karpenter)
+  subnetSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: e-ren-cluster
+
+  # Security group selector
+  securityGroupSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: e-ren-cluster
+
+  # User data for node initialization
+  userData: |
+    #!/bin/bash
+    /etc/eks/bootstrap.sh e-ren-cluster
+
+  # Block device mappings (root volume)
+  blockDeviceMappings:
+    - deviceName: /dev/xvda
+      ebs:
+        volumeSize: 20Gi
+        volumeType: gp3
+        encrypted: true
+        deleteOnTermination: true
+
+  # Metadata options (IMDSv2 required for security)
+  metadataOptions:
+    httpEndpoint: enabled
+    httpProtocolIPv6: disabled
+    httpPutResponseHopLimit: 2
+    httpTokens: required
+
+---
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata:
+  name: on-demand
+spec:
+  # Template for nodes
+  template:
+    metadata:
+      labels:
+        workload-type: critical
+        capacity-type: on-demand
+
+    spec:
+      # Use default EC2NodeClass
+      nodeClassRef:
+        group: karpenter.k8s.aws
+        kind: EC2NodeClass
+        name: default
+
+      # Requirements for node selection
+      requirements:
+        # Use on-demand instances only
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values: ["on-demand"]
+
+        # ARM instances for cost savings (~20% cheaper)
+        - key: kubernetes.io/arch
+          operator: In
+          values: ["arm64"]
+
+        # Instance types (prefer smaller, cost-effective sizes)
+        - key: node.kubernetes.io/instance-type
+          operator: In
+          values:
+            - t4g.small
+            - t4g.medium
+            - t4g.large
+
+        # Availability zones
+        - key: topology.kubernetes.io/zone
+          operator: In
+          values:
+            - us-east-1a
+            - us-east-1b
+
+      # Taints (none for on-demand - accepts all pods)
+      taints: []
+
+  # Limits (max resources across all on-demand nodes)
+  limits:
+    cpu: "16"
+    memory: 32Gi
+
+  # Disruption budget (how aggressively to consolidate)
+  disruption:
+    consolidationPolicy: WhenUnderutilized
+    consolidateAfter: 30s
+
+---
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata:
+  name: spot
+spec:
+  # Template for nodes
+  template:
+    metadata:
+      labels:
+        workload-type: batch
+        capacity-type: spot
+
+    spec:
+      # Use default EC2NodeClass
+      nodeClassRef:
+        group: karpenter.k8s.aws
+        kind: EC2NodeClass
+        name: default
+
+      # Requirements for node selection
+      requirements:
+        # Use spot instances only
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values: ["spot"]
+
+        # ARM instances (cheaper + better spot availability)
+        - key: kubernetes.io/arch
+          operator: In
+          values: ["arm64"]
+
+        # Diverse instance types for better spot availability
+        - key: node.kubernetes.io/instance-type
+          operator: In
+          values:
+            - t4g.small
+            - t4g.medium
+            - t4g.large
+            - c6g.medium
+            - c6g.large
+            - m6g.medium
+            - m6g.large
+
+        # Availability zones
+        - key: topology.kubernetes.io/zone
+          operator: In
+          values:
+            - us-east-1a
+            - us-east-1b
+
+      # Taint spot nodes so only tolerant pods schedule here
+      taints:
+        - key: spot
+          value: "true"
+          effect: NoSchedule
+
+  # Limits (max resources across all spot nodes)
+  limits:
+    cpu: "64"
+    memory: 128Gi
+
+  # Disruption budget (more aggressive for spot)
+  disruption:
+    consolidationPolicy: WhenEmpty
+    consolidateAfter: 30s
+    # Allow spot interruptions
+    budgets:
+      - nodes: "10%"

@@ -10,6 +10,7 @@ Commands:
   test [args...]            Run RSpec tests (supports all RSpec options)
   shell                     Open bash shell in Rails container
   logs                      Show Rails container logs
+  clean-pry                 Remove all binding.pry statements from spec files
 
 Options:
   --platform PLATFORM       Build for specific platform (arm64, amd64, x86)
@@ -33,6 +34,9 @@ Examples:
   e_ren test failed                              # Re-run previously failed tests (alias)
   e_ren test --debug spec/models/user_spec.rb:42 # Debug mode (enables binding.pry)
   e_ren test -d spec/models                      # Debug mode (short form)
+
+  # Cleanup
+  e_ren clean-pry           # Remove all binding.pry from spec files
 """
 
 import subprocess
@@ -323,6 +327,53 @@ def server():
     run_command(f"docker exec -it {CONTAINER_NAME} rails server -b 0.0.0.0")
 
 
+def clean_pry():
+    """Remove all binding.pry statements from spec files"""
+    # Get the e_ren project directory (parent of e_ren_infra)
+    infra_dir = os.path.dirname(os.path.abspath(__file__))
+    project_dir = os.path.join(os.path.dirname(infra_dir), 'e_ren')
+    spec_dir = os.path.join(project_dir, 'spec')
+
+    if not os.path.exists(spec_dir):
+        print(f"❌ Spec directory not found at {spec_dir}")
+        sys.exit(1)
+
+    print("🧹 Removing binding.pry statements from spec files...")
+
+    # Find all .rb files in spec directory
+    count = 0
+    for root, dirs, files in os.walk(spec_dir):
+        for file in files:
+            if file.endswith('.rb'):
+                file_path = os.path.join(root, file)
+
+                # Read file content
+                with open(file_path, 'r') as f:
+                    lines = f.readlines()
+
+                # Filter out lines containing binding.pry
+                new_lines = []
+                removed = 0
+                for line in lines:
+                    if 'binding.pry' in line:
+                        removed += 1
+                    else:
+                        new_lines.append(line)
+
+                # Write back if changes were made
+                if removed > 0:
+                    with open(file_path, 'w') as f:
+                        f.writelines(new_lines)
+                    rel_path = os.path.relpath(file_path, project_dir)
+                    print(f"   ✓ {rel_path} ({removed} line(s) removed)")
+                    count += removed
+
+    if count > 0:
+        print(f"\n✅ Removed {count} binding.pry statement(s) from spec files")
+    else:
+        print("\n✅ No binding.pry statements found in spec files")
+
+
 def usage():
     """Show usage information"""
     print(__doc__)
@@ -347,6 +398,7 @@ def main():
             "test": lambda: test(args),
             "shell": lambda: shell(),
             "logs": lambda: logs(),
+            "clean-pry": lambda: clean_pry(),
         }
     else:
         commands = {
@@ -357,6 +409,7 @@ def main():
             "test": lambda: test(args),
             "shell": lambda: shell(),
             "logs": lambda: logs(),
+            "clean-pry": lambda: clean_pry(),
         }
 
     if command not in commands:

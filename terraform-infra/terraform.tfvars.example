@@ -1,0 +1,12 @@
+# Example Terraform Variables
+# Copy this file to terraform.tfvars and customize for your environment
+# terraform.tfvars is gitignored and will not be committed
+
+# AWS Configuration
+aws_region  = "us-east-1"
+environment = "prod"
+
+# Note: AWS credentials should be set in Terraform Cloud as environment variables:
+# - AWS_ACCESS_KEY_ID
+# - AWS_SECRET_ACCESS_KEY
+# - AWS_REGION
