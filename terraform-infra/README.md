@@ -63,19 +63,40 @@ terraform-infra/
 
 ### EKS Cluster (eks.tf)
 
+**Architecture:**
+
+Three node groups:
+
+1. **Karpenter controller** (1x t4g.nano ARM) - ~$3/month
+   - Runs Karpenter autoscaler only
+   - Tainted to prevent other pods from scheduling here
+   - Always running (lightweight)
+
+2. **Rails application** (1x t4g.medium ARM) - ~$15/month
+   - Runs Rails app (no cold starts)
+   - Runs core services (ingress, monitoring)
+   - Always running (critical workload)
+
+3. **Spot nodes** (0-2x t4g.small/medium ARM) - Karpenter-managed
+   - Auto-provisions for traffic bursts
+   - Scales to 0 when idle ($0)
+   - 70% cheaper than on-demand
+
+**Total baseline cost**: ~$18/month + NAT gateway (~$32/month) = **~$50/month**
+
 **What's included:**
 - VPC with public and private subnets across 2 AZs
 - EKS cluster (Kubernetes 1.29)
-- Karpenter controller node group (2-3 t4g.small ARM nodes)
-- Karpenter autoscaler for intelligent scaling
+- 2 fixed node groups (Karpenter + Rails)
+- Karpenter autoscaler with spot instance support
 - EBS CSI driver for persistent volumes
 - Pod Identity Agent for IRSA
 
 **Cost optimizations:**
-- Single NAT gateway (~$32/month vs $96 for 3)
+- Single NAT gateway (~$32/month vs $64 for 2)
 - ARM instances (~20% cheaper than x86)
-- Karpenter manages spot instances (up to 70% cheaper)
-- Small controller nodes (t4g.small)
+- Tiny dedicated Karpenter node (t4g.nano)
+- Spot instances scale to 0 when idle ($0 when not in use)
 
 **Deployed:**
 
@@ -102,8 +123,8 @@ kubectl apply -f karpenter-config.yaml
 ```
 
 This creates:
-- **On-demand NodePool**: For critical workloads (max 16 CPU, 32Gi RAM)
-- **Spot NodePool**: For batch jobs (max 64 CPU, 128Gi RAM, spot instances)
+- **EC2NodeClass**: Infrastructure config for Karpenter-provisioned nodes
+- **Spot NodePool**: For burst traffic (max 2 nodes, spot instances)
 
 **Verify Karpenter:**
 
@@ -115,9 +136,9 @@ kubectl logs -n kube-system -l app.kubernetes.io/name=karpenter
 
 ### Deploying Workloads
 
-#### Critical Workloads (On-Demand)
+#### Rails Application (Fixed On-Demand Node)
 
-For databases, stateful apps, and critical services:
+Main application runs on the dedicated t4g.medium node:
 
 ```yaml
 apiVersion: apps/v1
@@ -125,49 +146,139 @@ kind: Deployment
 metadata:
   name: rails-app
 spec:
+  replicas: 1  # Single replica on fixed node
   template:
     spec:
       nodeSelector:
-        workload-type: critical  # Schedule on on-demand nodes
+        workload-type: critical  # Targets t4g.medium node
       containers:
         - name: app
-          image: rails-app:latest
+          image: your-registry/rails-app:latest
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
 ```
 
-#### Batch Workloads (Spot)
+#### Burst Traffic (Spot Nodes)
 
-For background jobs, batch processing, and fault-tolerant services:
+Additional Rails replicas for traffic bursts - Karpenter auto-provisions spot nodes:
 
 ```yaml
-apiVersion: batch/v1
-kind: Job
+apiVersion: apps/v1
+kind: Deployment
 metadata:
-  name: data-processing
+  name: rails-app-burst
 spec:
+  replicas: 0  # HPA will scale this up/down
   template:
     spec:
       nodeSelector:
-        workload-type: batch  # Schedule on spot nodes
+        workload-type: batch  # Targets Karpenter-managed spot nodes
       tolerations:
         - key: spot
           operator: Equal
           value: "true"
-          effect: NoSchedule
+          effect: NO_SCHEDULE
       containers:
-        - name: processor
-          image: data-processor:latest
+        - name: app
+          image: your-registry/rails-app:latest
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: rails-app-burst
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: rails-app-burst
+  minReplicas: 0
+  maxReplicas: 4  # Will trigger Karpenter to provision up to 2 spot nodes
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
 ```
 
-**Note:** Spot instances can be interrupted with 2 minutes notice. Use for:
-- Batch jobs
-- Stateless web servers (with multiple replicas)
-- CI/CD workers
-- Background tasks
+**How it works:**
+1. Fixed node always runs 1 Rails replica (handles baseline traffic)
+2. When traffic increases, HPA scales up `rails-app-burst`
+3. Karpenter sees pending pods, provisions spot nodes (0-2 nodes)
+4. When traffic drops, HPA scales down, Karpenter terminates idle spot nodes
 
-**Avoid spot for:**
-- Databases
-- Stateful applications
-- Single-replica critical services
+**Note:** Spot instances can be interrupted with 2 minutes notice. Rails can handle this since:
+- At least 1 replica always runs on the fixed node
+- Multiple replicas distribute load
+- Load balancer automatically routes around interrupted pods
+
+### Exposing Services with ALB
+
+The AWS Load Balancer Controller is automatically installed. Create an Ingress to expose your Rails app:
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: rails-app
+spec:
+  type: NodePort  # ALB targets NodePort services
+  selector:
+    app: rails-app
+  ports:
+    - port: 80
+      targetPort: 3000
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: rails-app
+  annotations:
+    # Creates an internet-facing ALB
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    # Target type: ip mode (more efficient than instance mode)
+    alb.ingress.kubernetes.io/target-type: ip
+    # Health check path
+    alb.ingress.kubernetes.io/healthcheck-path: /health
+    # Listen on HTTP (add HTTPS later with ACM certificate)
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}]'
+spec:
+  ingressClassName: alb
+  rules:
+    - http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: rails-app
+                port:
+                  number: 80
+```
+
+**After applying:**
+```bash
+kubectl apply -f rails-ingress.yaml
+
+# Wait for ALB to be provisioned (~2-3 minutes)
+kubectl get ingress rails-app
+
+# Get the ALB URL
+kubectl get ingress rails-app -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
+# Output: k8s-default-railsapp-abc123.us-east-1.elb.amazonaws.com
+```
+
+**For HTTPS** (add later with Route53 + ACM):
+```yaml
+metadata:
+  annotations:
+    alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:us-east-1:ACCOUNT_ID:certificate/CERT_ID
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS": 443}]'
+    alb.ingress.kubernetes.io/ssl-redirect: '443'
+```
 
 ## Variables
 

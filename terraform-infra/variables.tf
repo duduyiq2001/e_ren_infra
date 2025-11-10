@@ -11,7 +11,16 @@ variable "environment" {
   type        = map(string)
   default     = {
     prod = "prod",
-    dev = "dev"              
-                
+    dev = "dev"
+
                 }
+}
+
+# Accept AWS_REGION from Terraform Cloud workspace (not used in code)
+# This prevents "undeclared variable" errors when TF Cloud passes it
+# The actual region is configured via aws_region (lowercase) above
+variable "AWS_REGION" {
+  description = "AWS region (passed from Terraform Cloud, unused)"
+  type        = string
+  default     = "us-east-1"
 }

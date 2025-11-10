@@ -10,33 +10,30 @@
 #   Providers
 # ═══════════════════════════════════════════════════════════
 
-provider "aws" {
-  region = local.region
-}
 
-provider "helm" {
-  kubernetes {
-    host                   = module.eks.cluster_endpoint
-    cluster_ca_certificate = base64decode(module.eks.cluster_certificate_authority_data)
+# Kubernetes provider for EKS cluster access
+provider "kubernetes" {
+  host                   = module.eks.cluster_endpoint
+  cluster_ca_certificate = base64decode(module.eks.cluster_certificate_authority_data)
 
-    exec {
-      api_version = "client.authentication.k8s.io/v1beta1"
-      command     = "aws"
-      # Requires awscli installed where Terraform runs
-      args = ["eks", "get-token", "--cluster-name", module.eks.cluster_name]
-    }
+  exec {
+    api_version = "client.authentication.k8s.io/v1"
+    command     = "aws"
+    args        = ["eks", "get-token", "--cluster-name", module.eks.cluster_name]
   }
 }
 
-# ═══════════════════════════════════════════════════════════
-#   Data Sources
-# ═══════════════════════════════════════════════════════════
+# Helm provider - uses attribute syntax in v3.x (not block syntax)
+provider "helm" {
+  kubernetes = {
+    host                   = module.eks.cluster_endpoint
+    cluster_ca_certificate = base64decode(module.eks.cluster_certificate_authority_data)
 
-# Filter out local zones (not supported with managed node groups)
-data "aws_availability_zones" "available" {
-  filter {
-    name   = "opt-in-status"
-    values = ["opt-in-not-required"]
+    exec = {
+      api_version = "client.authentication.k8s.io/v1"
+      command     = "aws"
+      args        = ["eks", "get-token", "--cluster-name", module.eks.cluster_name]
+    }
   }
 }
 
@@ -58,7 +55,7 @@ locals {
 
   tags = {
     Name        = "e-ren"
-    Environment = var.environment
+    Environment = var.environment["prod"]  # Select prod from the map
     ManagedBy   = "Terraform"
   }
 }
@@ -88,6 +85,11 @@ module "vpc" {
 
   enable_dns_hostnames = true
   enable_dns_support   = true
+
+  # Don't manage default resources (prevents conflicts)
+  manage_default_network_acl    = false
+  manage_default_route_table    = false
+  manage_default_security_group = false
 
   # Tags for EKS load balancer discovery
   public_subnet_tags = {
@@ -154,33 +156,65 @@ module "eks" {
   cluster_enabled_log_types = ["api", "audit", "authenticator"]
 
   # ═══════════════════════════════════════════════════════════
-  #   Karpenter Controller Node Group
+  #   Fixed On-Demand Node Groups
   # ═══════════════════════════════════════════════════════════
-  #
-  # Small, stable node group that runs Karpenter itself.
-  # Karpenter will provision additional nodes as needed.
 
   eks_managed_node_groups = {
-    karpenter = {
-      name = "e-ren-karpenter-controller"
+    # Karpenter controller node (tiny, cheap)
+    karpenter_controller = {
+      name = "e-ren-karpenter"
 
-      # ARM instances for cost savings
-      instance_types = ["t4g.small"]
+      # Smallest ARM instance (~$3/month)
+      instance_types = ["t4g.nano"]
       ami_type       = "AL2_ARM_64"
 
-      # Fixed size - Karpenter controller needs stable nodes
-      min_size     = 2
-      max_size     = 3
-      desired_size = 2
+      # Fixed size - Karpenter controller only
+      min_size     = 1
+      max_size     = 1
+      desired_size = 1
 
-      # Label ensures Karpenter runs on nodes it doesn't manage
+      # Label ensures Karpenter runs here
       labels = {
         "karpenter.sh/controller" = "true"
-        role                      = "karpenter-controller"
+        "workload-type"           = "karpenter"
+        "capacity-type"           = "on-demand"
       }
+
+      # Taint so only Karpenter pods schedule here
+      taints = [
+        {
+          key    = "karpenter.sh/controller"
+          value  = "true"
+          effect = "NO_SCHEDULE"
+        }
+      ]
 
       tags = {
         Name = "e-ren-karpenter-controller"
+      }
+    }
+
+    # Rails application node (always-on, prevents cold starts)
+    rails_app = {
+      name = "e-ren-rails"
+
+      # Medium ARM instance for Rails (~$15/month)
+      instance_types = ["t4g.medium"]
+      ami_type       = "AL2_ARM_64"
+
+      # Fixed size - no autoscaling
+      min_size     = 1
+      max_size     = 1
+      desired_size = 1
+
+      # Labels for pod scheduling
+      labels = {
+        "workload-type" = "critical"
+        "capacity-type" = "on-demand"
+      }
+
+      tags = {
+        Name = "e-ren-rails-app"
       }
     }
   }
@@ -241,6 +275,80 @@ module "karpenter" {
 }
 
 # ═══════════════════════════════════════════════════════════
+#   AWS Load Balancer Controller IRSA
+# ═══════════════════════════════════════════════════════════
+
+# Fetch the IAM policy document for AWS Load Balancer Controller
+data "http" "aws_load_balancer_controller_policy" {
+  url = "https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/v2.7.0/docs/install/iam_policy.json"
+}
+
+resource "aws_iam_policy" "aws_load_balancer_controller" {
+  name        = "e-ren-aws-load-balancer-controller"
+  description = "Policy for AWS Load Balancer Controller"
+  policy      = data.http.aws_load_balancer_controller_policy.response_body
+
+  tags = {
+    Name = "e-ren-aws-load-balancer-controller"
+  }
+}
+
+module "aws_load_balancer_controller_irsa" {
+  source  = "terraform-aws-modules/iam/aws//modules/iam-assumable-role-with-oidc"
+  version = "~> 5.39"
+
+  create_role  = true
+  role_name    = "e-ren-aws-load-balancer-controller"
+  provider_url = module.eks.oidc_provider
+
+  role_policy_arns = [aws_iam_policy.aws_load_balancer_controller.arn]
+  oidc_fully_qualified_subjects = [
+    "system:serviceaccount:kube-system:aws-load-balancer-controller"
+  ]
+
+  tags = {
+    Name = "e-ren-aws-load-balancer-controller"
+  }
+}
+
+# ═══════════════════════════════════════════════════════════
+#   AWS Load Balancer Controller Helm Chart
+# ═══════════════════════════════════════════════════════════
+
+resource "helm_release" "aws_load_balancer_controller" {
+  namespace  = "kube-system"
+  name       = "aws-load-balancer-controller"
+  repository = "https://aws.github.io/eks-charts"
+  chart      = "aws-load-balancer-controller"
+  version    = "1.7.0"
+
+  set = [
+    {
+      name  = "clusterName"
+      value = module.eks.cluster_name
+    },
+    {
+      name  = "serviceAccount.name"
+      value = "aws-load-balancer-controller"
+    },
+    {
+      name  = "serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn"
+      value = module.aws_load_balancer_controller_irsa.iam_role_arn
+    },
+    {
+      # Ensure controller runs on fixed nodes (not spot)
+      name  = "nodeSelector.workload-type"
+      value = "critical"
+    }
+  ]
+
+  depends_on = [
+    module.eks,
+    module.aws_load_balancer_controller_irsa
+  ]
+}
+
+# ═══════════════════════════════════════════════════════════
 #   Karpenter Helm Chart
 # ═══════════════════════════════════════════════════════════
 
@@ -258,6 +366,11 @@ resource "helm_release" "karpenter" {
     <<-EOT
     nodeSelector:
       karpenter.sh/controller: 'true'
+    tolerations:
+      - key: karpenter.sh/controller
+        operator: Equal
+        value: 'true'
+        effect: NoSchedule
     dnsPolicy: Default
     settings:
       clusterName: ${module.eks.cluster_name}
@@ -319,7 +432,7 @@ output "karpenter_queue_name" {
 
 output "karpenter_node_instance_profile_name" {
   description = "Instance profile name for Karpenter nodes"
-  value       = module.karpenter.node_instance_profile_name
+  value       = module.karpenter.instance_profile_name
 }
 
 output "configure_kubectl" {

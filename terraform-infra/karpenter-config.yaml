@@ -4,10 +4,13 @@
 #   aws eks update-kubeconfig --region us-east-1 --name e-ren-cluster
 #   kubectl apply -f karpenter-config.yaml
 #
+# Architecture:
+# - 1 fixed on-demand node (always running, hosts Rails app + Karpenter)
+# - Karpenter provisions 0-2 spot nodes for burst traffic
+#
 # This creates:
-# - EC2NodeClass (infrastructure config)
-# - On-demand NodePool (critical workloads)
-# - Spot NodePool (batch/fault-tolerant workloads)
+# - EC2NodeClass (infrastructure config for spot nodes)
+# - Spot NodePool (autoscales 0-2 nodes based on load)
 
 ---
 apiVersion: karpenter.k8s.aws/v1
@@ -54,66 +57,10 @@ spec:
     httpTokens: required
 
 ---
-apiVersion: karpenter.sh/v1
-kind: NodePool
-metadata:
-  name: on-demand
-spec:
-  # Template for nodes
-  template:
-    metadata:
-      labels:
-        workload-type: critical
-        capacity-type: on-demand
+# No on-demand NodePool needed - we have a fixed on-demand node group
+# Karpenter only manages spot instances for burst capacity
 
-    spec:
-      # Use default EC2NodeClass
-      nodeClassRef:
-        group: karpenter.k8s.aws
-        kind: EC2NodeClass
-        name: default
 
-      # Requirements for node selection
-      requirements:
-        # Use on-demand instances only
-        - key: karpenter.sh/capacity-type
-          operator: In
-          values: ["on-demand"]
-
-        # ARM instances for cost savings (~20% cheaper)
-        - key: kubernetes.io/arch
-          operator: In
-          values: ["arm64"]
-
-        # Instance types (prefer smaller, cost-effective sizes)
-        - key: node.kubernetes.io/instance-type
-          operator: In
-          values:
-            - t4g.small
-            - t4g.medium
-            - t4g.large
-
-        # Availability zones
-        - key: topology.kubernetes.io/zone
-          operator: In
-          values:
-            - us-east-1a
-            - us-east-1b
-
-      # Taints (none for on-demand - accepts all pods)
-      taints: []
-
-  # Limits (max resources across all on-demand nodes)
-  limits:
-    cpu: "16"
-    memory: 32Gi
-
-  # Disruption budget (how aggressively to consolidate)
-  disruption:
-    consolidationPolicy: WhenUnderutilized
-    consolidateAfter: 30s
-
----
 apiVersion: karpenter.sh/v1
 kind: NodePool
 metadata:
@@ -157,7 +104,7 @@ spec:
             - m6g.medium
             - m6g.large
 
-        # Availability zones
+        # Availability zones (update to match your AWS region)
         - key: topology.kubernetes.io/zone
           operator: In
           values:
@@ -168,17 +115,18 @@ spec:
       taints:
         - key: spot
           value: "true"
-          effect: NoSchedule
+          effect: NO_SCHEDULE
 
-  # Limits (max resources across all spot nodes)
+  # Limits: Cap at ~2 t4g.medium instances (2 vCPU, 4Gi RAM each)
+  # Karpenter will provision nodes as needed up to this limit
   limits:
-    cpu: "64"
-    memory: 128Gi
+    cpu: "4"
+    memory: 8Gi
 
-  # Disruption budget (more aggressive for spot)
+  # Disruption budget (aggressive consolidation for cost savings)
   disruption:
     consolidationPolicy: WhenEmpty
     consolidateAfter: 30s
     # Allow spot interruptions
     budgets:
-      - nodes: "10%"
+      - nodes: "100%"

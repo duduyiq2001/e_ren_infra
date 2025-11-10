@@ -41,6 +41,10 @@ terraform.rc
 /aws-setup/terraform-credentials.txt
 /terraform-infra/aws-setup/terraform-credentials.txt
 /terraform-iam/aws-setup/terraform-credentials.txt
+
+# IAM policy files (may contain sensitive permissions)
+/aws-setup/policies/terraform-provisioner-simplified.json
+
 # IAM users file (contains team member information)
 /terraform-iam/iam-users.tf
 
